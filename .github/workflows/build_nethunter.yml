@@ -1,0 +1,58 @@
+name: Build S0NiX NetHunter Kernel (RTL8811AU/21AU)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ 14-Retro, main, master, 4.19 ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Kernel Source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install Build Dependencies & Clang
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc bison build-essential ccache curl flex git zip unzip python3 wget clang lld llvm gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi libssl-dev libelf-dev dwarves cpio
+
+      - name: Inject RTL8811AU / RTL8821AU Driver into Kernel Source
+        run: |
+          git clone --depth=1 https://github.com drivers/net/wireless/realtek/rtl8812au
+          sed -i 's/CONFIG_PLATFORM_I386_PC = y/CONFIG_PLATFORM_I386_PC = n/g' drivers/net/wireless/realtek/rtl8812au/Makefile
+          sed -i 's/CONFIG_PLATFORM_ARM64_RPI = n/CONFIG_PLATFORM_ARM64_RPI = y/g' drivers/net/wireless/realtek/rtl8812au/Makefile
+          echo 'obj-$(CONFIG_88XXAU) += rtl8812au/' >> drivers/net/wireless/realtek/Makefile
+          sed -i '/endif # WLAN_VENDOR_REALTEK/i source "drivers/net/wireless/realtek/rtl8812au/Kconfig"' drivers/net/wireless/realtek/Kconfig
+
+      - name: Apply Kali NetHunter Patches (Injection & HID)
+        run: |
+          wget -q https://gitlab.com || true
+          wget -q https://gitlab.com || true
+          patch -p1 < mac80211_injection.patch || echo "Injection patch skipped or already applied"
+          patch -p1 < hid_gadget.patch || echo "HID patch skipped or already applied"
+
+      - name: Compile Kernel
+        run: |
+          export ARCH=arm64
+          export SUBARCH=arm64
+          make O=out ARCH=arm64 lavender_defconfig
+          ./scripts/config --file out/.config -e 88XXAU -e WLAN_VENDOR_REALTEK
+          make O=out ARCH=arm64 olddefconfig
+          make -j$(nproc --all) O=out ARCH=arm64 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+
+      - name: Package AnyKernel3 Zip
+        run: |
+          git clone --depth=1 https://github.com AnyKernel3
+          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' AnyKernel3/anykernel.sh
+          cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
+          cd AnyKernel3
+          zip -r9 ../S0NiX-NetHunter-RTL8821AU-Lavender.zip * -x .git README.md *placeholder
+
+      - name: Upload Flashable Kernel Zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: S0NiX-NetHunter-RTL8821AU-Lavender
+          path: S0NiX-NetHunter-RTL8821AU-Lavender.zip
